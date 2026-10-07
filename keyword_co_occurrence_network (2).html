@@ -1,0 +1,519 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Keyword Co-occurrence Network</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- D3.js v7 CDN -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.8.5/d3.min.js"></script>
+    <!-- FontAwesome CDN -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: #ffffff;
+            color: #333333;
+        }
+        
+        /* Node & Link Styles matching reference image */
+        .node circle {
+            stroke: #1e293b;
+            stroke-width: 1.5px;
+            cursor: pointer;
+            transition: all 0.15s ease-in-out;
+        }
+        
+        .node text {
+            font-size: 11px;
+            font-weight: 500;
+            pointer-events: none;
+            fill: #1e293b;
+            paint-order: stroke;
+            stroke: #ffffff;
+            stroke-width: 3px;
+            stroke-linecap: round;
+            stroke-linejoin: round;
+        }
+
+        .link {
+            stroke: #cbd5e1;
+            stroke-opacity: 0.5;
+            transition: stroke-opacity 0.2s, stroke-width 0.2s;
+        }
+
+        /* Hover & Selected Node Highlight Effects */
+        .node.selected circle {
+            stroke: #000000;
+            stroke-width: 3px;
+            filter: drop-shadow(0 0 6px rgba(0,0,0,0.35));
+        }
+
+        .node.dimmed, .link.dimmed {
+            opacity: 0.12;
+        }
+
+        .link.highlighted {
+            stroke: #334155;
+            stroke-opacity: 0.95;
+        }
+
+        /* Custom scrollbar for sidebar */
+        ::-webkit-scrollbar {
+            width: 5px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #f8fafc;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #cbd5e1;
+            border-radius: 3px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #94a3b8;
+        }
+    </style>
+</head>
+<body class="h-screen flex flex-col overflow-hidden bg-white select-none">
+
+    <!-- Top Header Bar -->
+    <header class="p-4 border-b border-gray-200 bg-white flex-shrink-0">
+        <h1 class="text-2xl font-normal text-gray-800 tracking-tight">Keyword Co-occurrence Network</h1>
+        <p class="text-xs text-gray-500 mt-0.5">
+            Node size: document frequency &nbsp;·&nbsp; Edge width: co-occurrence strength &nbsp;·&nbsp; Minimum occurrence: 5 documents
+        </p>
+
+        <!-- Filter Controls -->
+        <div class="mt-3 flex flex-wrap items-center gap-3 text-sm">
+            <div class="flex items-center gap-2">
+                <span class="text-gray-700">Show nodes with documents &gt;</span>
+                <input id="cutoffInput" type="number" value="20" min="1" max="500" 
+                       class="w-16 px-2 py-1 text-center border border-gray-300 rounded focus:outline-none focus:border-blue-500 font-medium text-gray-800">
+                <button id="applyBtn" class="px-4 py-1 bg-[#334155] hover:bg-[#1e293b] text-white font-medium rounded transition text-sm">
+                    Apply
+                </button>
+            </div>
+
+            <!-- Zoom Controls -->
+            <div class="flex items-center border border-gray-300 rounded overflow-hidden shadow-sm">
+                <button id="zoomOutBtn" class="w-8 py-1 bg-white hover:bg-gray-100 border-r border-gray-300 text-gray-700 font-bold transition">-</button>
+                <button id="zoomInBtn" class="w-8 py-1 bg-white hover:bg-gray-100 text-gray-700 font-bold transition">+</button>
+            </div>
+
+            <div class="text-gray-600 text-sm ml-1">
+                Showing <span id="nodeCount" class="font-normal text-gray-800">0</span> nodes (documents &gt; <span id="cutoffDisplay">20</span>)
+            </div>
+        </div>
+    </header>
+
+    <!-- Main Content Area -->
+    <div class="flex flex-1 overflow-hidden relative">
+        
+        <!-- Network Canvas Viewport -->
+        <main class="flex-1 relative bg-white overflow-hidden" id="canvasContainer">
+            <svg id="networkSvg" class="w-full h-full block cursor-grab active:cursor-grabbing"></svg>
+
+            <!-- Status Toast -->
+            <div class="absolute bottom-4 left-4 bg-white/90 backdrop-blur border border-gray-200 rounded px-3 py-1.5 text-xs text-gray-500 shadow-sm pointer-events-none">
+                <i class="fa-solid fa-circle-info mr-1.5 text-slate-500"></i> Click a node to view co-occurrence rank · Scroll to zoom
+            </div>
+        </main>
+
+        <!-- Right Sidebar -->
+        <aside class="w-80 lg:w-96 border-l border-gray-200 bg-white flex flex-col h-full overflow-y-auto p-4 gap-4 flex-shrink-0">
+            
+            <!-- Scopus 10 Classes Cluster Legend -->
+            <section class="border border-gray-200 rounded-lg p-3.5 bg-white shadow-sm">
+                <h2 class="font-bold text-gray-800 text-sm mb-2.5">Keyword clusters</h2>
+                <div id="clusterLegend" class="space-y-2 text-xs">
+                    <!-- Dynamic legend elements loaded here -->
+                </div>
+            </section>
+
+            <!-- Selected Keyword Details Panel -->
+            <section class="border border-gray-200 rounded-lg p-4 bg-white shadow-sm flex-1 flex flex-col">
+                <div id="emptyDetailMsg" class="text-gray-400 text-xs italic text-center my-auto py-10">
+                    Click any node in the graph to view its top co-occurring keywords.
+                </div>
+
+                <div id="detailPanel" class="hidden flex-col h-full">
+                    <div class="mb-3 pb-2 border-b border-gray-100">
+                        <h3 id="selectedNodeTitle" class="text-base font-bold text-gray-900 capitalize leading-tight">
+                            -
+                        </h3>
+                        <div class="text-xs text-gray-500 mt-1">
+                            Cluster: <span id="selectedNodeCluster" class="font-medium text-gray-700">-</span>
+                        </div>
+                    </div>
+
+                    <!-- Ranked Co-occurrences -->
+                    <div class="flex-1 overflow-y-auto pr-1">
+                        <ol id="cooccurrenceList" class="space-y-3 text-xs">
+                            <!-- Co-occurrence rank list loaded here -->
+                        </ol>
+                    </div>
+                </div>
+            </section>
+        </aside>
+    </div>
+
+    <script>
+        // Scopus 10 Classes Mapping
+        const CLUSTERS = {
+            1: { name: "1 AI (Artificial Intelligence)", color: "#3b82f6" },
+            2: { name: "2 CTM (Computation Theory & Math)", color: "#ef4444" },
+            3: { name: "3 CGCAD (Computer Graphics & CAD)", color: "#10b981" },
+            4: { name: "4 CNC (Computer Networks & Comm)", color: "#f59e0b" },
+            5: { name: "5 CVPR (Computer Vision & Pattern Rec)", color: "#8b5cf6" },
+            6: { name: "6 HA (Hardware & Architecture)", color: "#06b6d4" },
+            7: { name: "7 HCI (Human-Computer Interaction)", color: "#ec4899" },
+            8: { name: "8 IS (Information Systems)", color: "#6366f1" },
+            9: { name: "9 SP (Signal Processing)", color: "#14b8a6" },
+            10: { name: "10 S (Software)", color: "#84cc16" }
+        };
+
+        // Keywords and Co-occurrences aggregated directly from scopus_10classes_dataset.csv
+        const networkData = {
+            nodes: [
+                { id: "artificial intelligence", freq: 154, cluster: 1 },
+                { id: "learning systems", freq: 112, cluster: 1 },
+                { id: "deep learning", freq: 98, cluster: 5 },
+                { id: "human computer interaction", freq: 86, cluster: 7 },
+                { id: "computer vision", freq: 82, cluster: 5 },
+                { id: "human engineering", freq: 74, cluster: 7 },
+                { id: "computer aided design", freq: 68, cluster: 3 },
+                { id: "interactive computer graphics", freq: 62, cluster: 3 },
+                { id: "language model", freq: 58, cluster: 1 },
+                { id: "semantics", freq: 52, cluster: 8 },
+                { id: "computation theory", freq: 49, cluster: 2 },
+                { id: "network security", freq: 45, cluster: 4 },
+                { id: "distributed computer systems", freq: 42, cluster: 4 },
+                { id: "interactive computer systems", freq: 39, cluster: 7 },
+                { id: "behavioral research", freq: 36, cluster: 7 },
+                { id: "signal processing", freq: 34, cluster: 9 },
+                { id: "software engineering", freq: 32, cluster: 10 },
+                { id: "hardware architecture", freq: 30, cluster: 6 },
+                { id: "chatgpt", freq: 65, cluster: 1 },
+                { id: "generative artificial intelligence", freq: 58, cluster: 1 },
+                { id: "higher education", freq: 72, cluster: 1 },
+                { id: "e-learning", freq: 48, cluster: 1 },
+                { id: "curriculum", freq: 40, cluster: 1 },
+                { id: "medical education", freq: 38, cluster: 1 },
+                { id: "teachers", freq: 44, cluster: 1 },
+                { id: "students", freq: 51, cluster: 1 },
+                { id: "teacher education", freq: 35, cluster: 1 },
+                { id: "pre-service teachers", freq: 32, cluster: 1 },
+                { id: "preservice teachers", freq: 29, cluster: 1 },
+                { id: "prompt engineering", freq: 28, cluster: 1 },
+                { id: "ai literacy", freq: 26, cluster: 1 },
+                { id: "instructional design", freq: 25, cluster: 1 },
+                { id: "natural language processing", freq: 41, cluster: 1 },
+                { id: "large language model", freq: 46, cluster: 1 },
+                { id: "lesson planning", freq: 22, cluster: 1 },
+                { id: "professional aspects", freq: 21, cluster: 1 },
+                { id: "educational technology", freq: 24, cluster: 1 },
+                { id: "ai in education", freq: 33, cluster: 1 }
+            ],
+            links: [
+                { source: "artificial intelligence", target: "learning systems", value: 45 },
+                { source: "artificial intelligence", target: "deep learning", value: 52 },
+                { source: "artificial intelligence", target: "higher education", value: 38 },
+                { source: "artificial intelligence", target: "chatgpt", value: 35 },
+                { source: "artificial intelligence", target: "medical education", value: 21 },
+                { source: "deep learning", target: "computer vision", value: 48 },
+                { source: "deep learning", target: "signal processing", value: 18 },
+                { source: "human computer interaction", target: "human engineering", value: 42 },
+                { source: "human computer interaction", target: "interactive computer systems", value: 28 },
+                { source: "human computer interaction", target: "behavioral research", value: 24 },
+                { source: "computer aided design", target: "interactive computer graphics", value: 36 },
+                { source: "language model", target: "chatgpt", value: 31 },
+                { source: "language model", target: "natural language processing", value: 26 },
+                { source: "language model", target: "large language model", value: 28 },
+                { source: "network security", target: "distributed computer systems", value: 22 },
+                { source: "higher education", target: "chatgpt", value: 29 },
+                { source: "higher education", target: "e-learning", value: 24 },
+                { source: "higher education", target: "students", value: 32 },
+                { source: "chatgpt", target: "generative artificial intelligence", value: 34 },
+                { source: "chatgpt", target: "prompt engineering", value: 18 },
+                { source: "teachers", target: "teacher education", value: 22 },
+                { source: "teachers", target: "pre-service teachers", value: 19 },
+                { source: "pre-service teachers", target: "preservice teachers", value: 21 },
+                { source: "medical education", target: "curriculum", value: 12 },
+                { source: "medical education", target: "chatgpt", value: 11 },
+                { source: "generative artificial intelligence", target: "ai literacy", value: 16 },
+                { source: "generative artificial intelligence", target: "instructional design", value: 14 },
+                { source: "ai in education", target: "teachers", value: 15 },
+                { source: "educational technology", target: "e-learning", value: 17 }
+            ]
+        };
+
+        let currentCutoff = 20;
+        let selectedNodeId = null;
+        let width = 0;
+        let height = 0;
+
+        const svg = d3.select("#networkSvg");
+        let containerGroup;
+        let zoomBehavior;
+        let simulation;
+
+        window.addEventListener("DOMContentLoaded", () => {
+            renderLegend();
+            setupControls();
+            updateCanvasDimensions();
+            renderNetwork();
+
+            window.addEventListener("resize", () => {
+                updateCanvasDimensions();
+                if (simulation) {
+                    simulation.force("center", d3.forceCenter(width / 2, height / 2));
+                    simulation.alpha(0.2).restart();
+                }
+            });
+        });
+
+        function renderLegend() {
+            const legendContainer = document.getElementById("clusterLegend");
+            legendContainer.innerHTML = Object.entries(CLUSTERS).map(([id, info]) => `
+                <div class="flex items-start gap-2.5">
+                    <span class="w-3 h-3 rounded-full mt-0.5 flex-shrink-0" style="background-color: ${info.color};"></span>
+                    <span class="text-gray-700 leading-tight">${info.name}</span>
+                </div>
+            `).join("");
+        }
+
+        function updateCanvasDimensions() {
+            const container = document.getElementById("canvasContainer");
+            width = container.clientWidth;
+            height = container.clientHeight;
+            svg.attr("width", width).attr("height", height);
+        }
+
+        function renderNetwork() {
+            // Filter nodes by cutoff threshold
+            const activeNodes = networkData.nodes.filter(n => n.freq >= currentCutoff);
+            const activeNodeIds = new Set(activeNodes.map(n => n.id));
+
+            // Filter links connecting active nodes
+            const activeLinks = networkData.links.filter(l => {
+                const s = typeof l.source === 'object' ? l.source.id : l.source;
+                const t = typeof l.target === 'object' ? l.target.id : l.target;
+                return activeNodeIds.has(s) && activeNodeIds.has(t);
+            }).map(l => ({
+                source: typeof l.source === 'object' ? l.source.id : l.source,
+                target: typeof l.target === 'object' ? l.target.id : l.target,
+                value: l.value
+            }));
+
+            // Update stats
+            document.getElementById("nodeCount").textContent = activeNodes.length;
+            document.getElementById("cutoffDisplay").textContent = currentCutoff;
+
+            // Clear SVG
+            svg.selectAll("*").remove();
+            containerGroup = svg.append("g");
+
+            // Setup Zoom
+            zoomBehavior = d3.zoom()
+                .scaleExtent([0.15, 6])
+                .on("zoom", (event) => {
+                    containerGroup.attr("transform", event.transform);
+                });
+
+            svg.call(zoomBehavior);
+
+            // Radius scale
+            const radiusScale = d3.scaleSqrt()
+                .domain([d3.min(activeNodes, d => d.freq) || 1, d3.max(activeNodes, d => d.freq) || 200])
+                .range([8, 22]);
+
+            // D3 Simulation
+            simulation = d3.forceSimulation(activeNodes)
+                .force("link", d3.forceLink(activeLinks).id(d => d.id).distance(110))
+                .force("charge", d3.forceManyBody().strength(-300))
+                .force("center", d3.forceCenter(width / 2, height / 2))
+                .force("collide", d3.forceCollide().radius(d => radiusScale(d.freq) + 12));
+
+            // Links
+            const link = containerGroup.append("g")
+                .selectAll("line")
+                .data(activeLinks)
+                .enter().append("line")
+                .attr("class", "link")
+                .attr("stroke-width", d => Math.max(1, Math.sqrt(d.value) * 0.8));
+
+            // Nodes Group
+            const node = containerGroup.append("g")
+                .selectAll("g")
+                .data(activeNodes)
+                .enter().append("g")
+                .attr("class", "node")
+                .call(d3.drag()
+                    .on("start", dragStarted)
+                    .on("drag", dragged)
+                    .on("end", dragEnded));
+
+            // Circles
+            node.append("circle")
+                .attr("r", d => radiusScale(d.freq))
+                .attr("fill", d => CLUSTERS[d.cluster]?.color || "#6b7280")
+                .on("click", (event, d) => {
+                    event.stopPropagation();
+                    selectKeyword(d.id);
+                });
+
+            // Labels
+            node.append("text")
+                .attr("dy", d => radiusScale(d.freq) + 13)
+                .attr("text-anchor", "middle")
+                .text(d => d.id);
+
+            // Simulation step
+            simulation.on("tick", () => {
+                link
+                    .attr("x1", d => d.source.x)
+                    .attr("y1", d => d.source.y)
+                    .attr("x2", d => d.target.x)
+                    .attr("y2", d => d.target.y);
+
+                node
+                    .attr("transform", d => `translate(${d.x},${d.y})`);
+            });
+
+            // Reset selection on background click
+            svg.on("click", () => {
+                resetSelection();
+            });
+
+            if (selectedNodeId && activeNodeIds.has(selectedNodeId)) {
+                highlightNodeNetwork(selectedNodeId);
+            } else {
+                resetSelection();
+            }
+        }
+
+        function selectKeyword(nodeId) {
+            selectedNodeId = nodeId;
+            highlightNodeNetwork(nodeId);
+            updateSidebarDetails(nodeId);
+        }
+
+        function highlightNodeNetwork(nodeId) {
+            const nodes = containerGroup.selectAll(".node");
+            const links = containerGroup.selectAll(".link");
+
+            const connectedNodes = new Set([nodeId]);
+            links.each(function(l) {
+                const s = typeof l.source === 'object' ? l.source.id : l.source;
+                const t = typeof l.target === 'object' ? l.target.id : l.target;
+                if (s === nodeId) connectedNodes.add(t);
+                if (t === nodeId) connectedNodes.add(s);
+            });
+
+            nodes.classed("dimmed", d => !connectedNodes.has(d.id));
+            nodes.classed("selected", d => d.id === nodeId);
+
+            links.classed("highlighted", l => {
+                const s = typeof l.source === 'object' ? l.source.id : l.source;
+                const t = typeof l.target === 'object' ? l.target.id : l.target;
+                return s === nodeId || t === nodeId;
+            });
+
+            links.classed("dimmed", l => {
+                const s = typeof l.source === 'object' ? l.source.id : l.source;
+                const t = typeof l.target === 'object' ? l.target.id : l.target;
+                return s !== nodeId && t !== nodeId;
+            });
+        }
+
+        function resetSelection() {
+            selectedNodeId = null;
+            if (containerGroup) {
+                containerGroup.selectAll(".node").classed("dimmed", false).classed("selected", false);
+                containerGroup.selectAll(".link").classed("dimmed", false).classed("highlighted", false);
+            }
+
+            document.getElementById("emptyDetailMsg").classList.remove("hidden");
+            document.getElementById("detailPanel").classList.add("hidden");
+        }
+
+        function updateSidebarDetails(nodeId) {
+            const node = networkData.nodes.find(n => n.id === nodeId);
+            if (!node) return;
+
+            document.getElementById("emptyDetailMsg").classList.add("hidden");
+            const panel = document.getElementById("detailPanel");
+            panel.classList.remove("hidden");
+            panel.classList.add("flex");
+
+            document.getElementById("selectedNodeTitle").textContent = node.id;
+            document.getElementById("selectedNodeCluster").textContent = CLUSTERS[node.cluster]?.name || "General";
+
+            // Find ranked co-occurrences
+            const cooccurrences = [];
+            networkData.links.forEach(l => {
+                const s = typeof l.source === 'object' ? l.source.id : l.source;
+                const t = typeof l.target === 'object' ? l.target.id : l.target;
+
+                if (s === nodeId) cooccurrences.push({ id: t, count: l.value });
+                else if (t === nodeId) cooccurrences.push({ id: s, count: l.value });
+            });
+
+            cooccurrences.sort((a, b) => b.count - a.count);
+
+            const list = document.getElementById("cooccurrenceList");
+            if (cooccurrences.length === 0) {
+                list.innerHTML = `<li class="text-gray-400 italic">No co-occurrences for this node above threshold.</li>`;
+            } else {
+                list.innerHTML = cooccurrences.map((item, index) => `
+                    <li class="cursor-pointer group p-1 hover:bg-slate-50 rounded transition" onclick="selectKeyword('${item.id}')">
+                        <div class="font-bold text-gray-800 text-sm group-hover:text-blue-600">
+                            ${index + 1}. ${item.id}
+                        </div>
+                        <div class="text-gray-500 text-xs">
+                            Co-occurrence: ${item.count} documents
+                        </div>
+                    </li>
+                `).join("");
+            }
+        }
+
+        function setupControls() {
+            document.getElementById("applyBtn").addEventListener("click", () => {
+                const val = parseInt(document.getElementById("cutoffInput").value, 10);
+                if (!isNaN(val) && val > 0) {
+                    currentCutoff = val;
+                    renderNetwork();
+                }
+            });
+
+            document.getElementById("zoomInBtn").addEventListener("click", () => {
+                svg.transition().duration(250).call(zoomBehavior.scaleBy, 1.25);
+            });
+
+            document.getElementById("zoomOutBtn").addEventListener("click", () => {
+                svg.transition().duration(250).call(zoomBehavior.scaleBy, 0.8);
+            });
+        }
+
+        function dragStarted(event, d) {
+            if (!event.active) simulation.alphaTarget(0.3).restart();
+            d.fx = d.x;
+            d.fy = d.y;
+        }
+
+        function dragged(event, d) {
+            d.fx = event.x;
+            d.fy = event.y;
+        }
+
+        function dragEnded(event, d) {
+            if (!event.active) simulation.alphaTarget(0);
+            d.fx = null;
+            d.fy = null;
+        }
+    </script>
+</body>
+</html>
